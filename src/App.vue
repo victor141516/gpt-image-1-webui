@@ -9,6 +9,8 @@ const images = ref([] as Array<{ url: string; height: number; width: number }>)
 const openAiApiKey = useStorage('openai-key', '')
 const inputImage = ref<File>()
 const isGenerating = ref(false)
+const error = ref<any>(null)
+const showErrorPopup = ref(false)
 
 const onFileSelected = (event: Event) => {
   const selectedFile =
@@ -30,20 +32,42 @@ const onFileSelected = (event: Event) => {
 
 const onSubmit = async () => {
   isGenerating.value = true
-  const imageB64 = await generateImage({
-    text: promptValue.value,
-    image: inputImage.value,
-    resolution: resolutionValue.value,
-    apiKey: openAiApiKey.value,
-  })
-  isGenerating.value = false
+  error.value = null
+  showErrorPopup.value = false
 
-  if (imageB64) {
-    images.value.unshift({
-      url: `data:image/png;base64,${imageB64}`,
-      ...resolutionValue.value,
+  try {
+    const imageB64 = await generateImage({
+      text: promptValue.value,
+      image: inputImage.value,
+      resolution: resolutionValue.value,
+      apiKey: openAiApiKey.value,
     })
+
+    if (imageB64) {
+      images.value.unshift({
+        url: `data:image/png;base64,${imageB64}`,
+        ...resolutionValue.value,
+      })
+    }
+  } catch (err) {
+    error.value = err
+    showErrorPopup.value = true
+  } finally {
+    isGenerating.value = false
   }
+}
+
+const downloadImage = (url: string, index: number) => {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `image-${index + 1}.png`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
+const closeErrorPopup = () => {
+  showErrorPopup.value = false
 }
 </script>
 
@@ -107,8 +131,9 @@ const onSubmit = async () => {
 
     <div class="mt-6 space-y-4">
       <div
-        v-for="{ url, height, width } in images"
-        class="border border-gray-200 rounded-lg overflow-hidden shadow-sm"
+        v-for="({ url, height, width }, index) in images"
+        :key="index"
+        class="border border-gray-200 rounded-lg overflow-hidden shadow-sm relative group"
       >
         <img
           :width="width"
@@ -116,6 +141,82 @@ const onSubmit = async () => {
           :src="url"
           class="w-full h-auto object-cover"
         />
+        <button
+          @click="downloadImage(url, index)"
+          class="absolute bottom-3 right-3 bg-indigo-600 text-white p-2 rounded-full shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition opacity-0 group-hover:opacity-100"
+          title="Download image"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Error Popup -->
+    <div
+      v-if="showErrorPopup"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+    >
+      <div
+        class="bg-white rounded-lg p-6 max-w-md w-full max-h-[80vh] overflow-auto"
+      >
+        <div class="flex justify-between items-start mb-4">
+          <h3 class="text-xl font-bold text-red-600">Error</h3>
+          <button
+            @click="closeErrorPopup"
+            class="text-gray-400 hover:text-gray-600"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-6 w-6"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+        <div class="text-gray-700">
+          <p class="mb-2">An error occurred while generating the image:</p>
+          <div class="bg-gray-100 p-3 rounded-md overflow-auto max-h-[300px]">
+            <pre class="text-sm whitespace-pre-wrap">{{
+              error || 'Unknown error'
+            }}</pre>
+            <div
+              v-if="error?.response"
+              class="mt-2 pt-2 border-t border-gray-300"
+            >
+              <h4 class="font-bold mb-1">Response:</h4>
+              <pre class="text-sm whitespace-pre-wrap">{{
+                JSON.stringify(error.response?.data || {}, null, 2)
+              }}</pre>
+            </div>
+          </div>
+        </div>
+        <button
+          @click="closeErrorPopup"
+          class="mt-4 px-4 py-2 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full"
+        >
+          Close
+        </button>
       </div>
     </div>
   </div>

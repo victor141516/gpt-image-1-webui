@@ -28,7 +28,15 @@ export async function generateImage({
         },
 
         body: formData,
-      }).then((r) => r.json())
+      }).then(async (r) => {
+        if (r.ok) {
+          return r.json()
+        } else {
+          return Promise.reject(
+            new Error('Non 200 response: ' + (await r.text()))
+          )
+        }
+      })
     } else {
       response = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
@@ -42,11 +50,19 @@ export async function generateImage({
           n: 1,
           size,
         }),
-      }).then((r) => r.json())
+      }).then(async (r) => {
+        if (r.ok) {
+          return r.json()
+        } else {
+          return Promise.reject(
+            new Error('Non 200 response: ' + (await r.text()))
+          )
+        }
+      })
     }
   } catch (error) {
     console.log('Unexpected error:', error)
-    return null
+    throw (error as any)?.message ?? error?.toString() ?? error
   }
 
   const imageB64 = response?.data?.[0]?.b64_json
