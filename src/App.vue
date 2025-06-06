@@ -66,6 +66,23 @@ const downloadImage = (url: string, index: number) => {
   document.body.removeChild(a)
 }
 
+const useAsInput = async (url: string, index: number) => {
+  try {
+    const response = await fetch(url)
+    const blob = await response.blob()
+
+    const file = new File([blob], `generated-image-${index + 1}.png`, {
+      type: 'image/png',
+      lastModified: Date.now(),
+    })
+
+    inputImage.value = file
+  } catch (err) {
+    console.error('Error al usar imagen como input:', err)
+    alert('Error al usar la imagen como input')
+  }
+}
+
 const closeErrorPopup = () => {
   showErrorPopup.value = false
 }
@@ -141,6 +158,28 @@ const closeErrorPopup = () => {
           :src="url"
           class="w-full h-auto object-cover"
         />
+
+        <button
+          @click="useAsInput(url, index)"
+          class="absolute bottom-3 right-14 bg-green-600 text-white p-2 rounded-full shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition opacity-0 group-hover:opacity-100"
+          title="Use as input image"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+            />
+          </svg>
+        </button>
+
         <button
           @click="downloadImage(url, index)"
           class="absolute bottom-3 right-3 bg-indigo-600 text-white p-2 rounded-full shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition opacity-0 group-hover:opacity-100"
