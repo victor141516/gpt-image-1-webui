@@ -1,262 +1,200 @@
 <script setup lang="ts">
-import { useStorage } from '@vueuse/core'
-import { ref } from 'vue'
-import { generateImage } from './libs/openai'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { refreshModels } from './lib/models'
+import { apiKey, settings } from './lib/settings'
+import {
+  activePath,
+  conversation,
+  fastForward,
+  hiddenAfterLeaf,
+  init,
+  ready,
+  renameConversation,
+  running,
+} from './lib/store'
+import { notice, settingsOpen, sidebarOpen } from './lib/ui'
+import Composer from './components/Composer.vue'
+import ImageAnnotator from './components/ImageAnnotator.vue'
+import ImageViewer from './components/ImageViewer.vue'
+import MessageItem from './components/MessageItem.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
+import Sidebar from './components/Sidebar.vue'
 
-const promptValue = ref('')
-const resolutionValue = ref({ width: 1024, height: 1024 })
-const images = ref([] as Array<{ url: string; height: number; width: number }>)
-const openAiApiKey = useStorage('openai-key', '')
-const inputImage = ref<File>()
-const isGenerating = ref(false)
-const error = ref<any>(null)
-const showErrorPopup = ref(false)
+const scroller = ref<HTMLElement>()
+const content = ref<HTMLElement>()
+const editingTitle = ref(false)
+const titleDraft = ref('')
 
-const onFileSelected = (event: Event) => {
-  const selectedFile =
-    event?.target &&
-    'files' in event?.target &&
-    event?.target.files instanceof FileList &&
-    event?.target.files?.['0'] &&
-    event?.target.files?.['0'] instanceof File &&
-    event?.target.files?.['0']
+// Keep the newest content in view while the agent streams, unless the user scrolled up.
+let pinned = true
+let lastTop = 0
+function onScroll() {
+  const el = scroller.value
+  if (!el) return
+  const nearEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+  // Only an upward scroll that leaves the end unpins; layout shifts and clamping keep the pin.
+  if (nearEnd) pinned = true
+  else if (el.scrollTop < lastTop) pinned = false
+  lastTop = el.scrollTop
+}
+function scrollToEnd() {
+  if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
+}
+const resizeObserver = new ResizeObserver(() => {
+  if (pinned) scrollToEnd()
+})
 
-  if (!selectedFile) {
-    alert('what happened?')
-    console.log(event)
-    return
-  }
+onMounted(() => {
+  void init()
+  if (content.value) resizeObserver.observe(content.value)
+})
+onBeforeUnmount(() => resizeObserver.disconnect())
 
-  inputImage.value = selectedFile
+let refreshTimer: number | undefined
+watch(
+  [apiKey, () => settings.value.baseURL],
+  ([key, baseURL]) => {
+    clearTimeout(refreshTimer)
+    if (key.trim()) refreshTimer = window.setTimeout(() => refreshModels(key.trim(), baseURL), 400)
+  },
+  { immediate: true },
+)
+
+// A new message, branch switch or conversation always jumps to the end.
+watch(
+  () => [conversation.value?.id, conversation.value?.leafId],
+  async () => {
+    pinned = true
+    await nextTick()
+    scrollToEnd()
+  },
+)
+
+function startRename() {
+  if (!conversation.value) return
+  titleDraft.value = conversation.value.title
+  editingTitle.value = true
 }
 
-const onSubmit = async () => {
-  isGenerating.value = true
-  error.value = null
-  showErrorPopup.value = false
-
-  try {
-    const imageB64 = await generateImage({
-      text: promptValue.value,
-      image: inputImage.value,
-      resolution: resolutionValue.value,
-      apiKey: openAiApiKey.value,
-    })
-
-    if (imageB64) {
-      images.value.unshift({
-        url: `data:image/png;base64,${imageB64}`,
-        ...resolutionValue.value,
-      })
-    }
-  } catch (err) {
-    error.value = err
-    showErrorPopup.value = true
-  } finally {
-    isGenerating.value = false
-  }
+async function commitRename() {
+  editingTitle.value = false
+  await renameConversation(titleDraft.value)
 }
 
-const downloadImage = (url: string, index: number) => {
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `image-${index + 1}.png`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-}
-
-const useAsInput = async (url: string, index: number) => {
-  try {
-    const response = await fetch(url)
-    const blob = await response.blob()
-
-    const file = new File([blob], `generated-image-${index + 1}.png`, {
-      type: 'image/png',
-      lastModified: Date.now(),
-    })
-
-    inputImage.value = file
-  } catch (err) {
-    console.error('Error al usar imagen como input:', err)
-    alert('Error al usar la imagen como input')
-  }
-}
-
-const closeErrorPopup = () => {
-  showErrorPopup.value = false
-}
+watch(notice, (value) => {
+  if (value) window.setTimeout(() => (notice.value = null), 6000)
+})
 </script>
 
 <template>
-  <div class="max-w-md mx-auto p-6 bg-white rounded-lg shadow-lg">
-    <h2 class="text-2xl font-bold text-gray-800 mb-4">Image Generator</h2>
+  <div class="flex h-dvh overflow-hidden bg-gradient-to-br from-slate-950 via-neutral-950 to-zinc-900 text-stone-100">
+    <Sidebar />
 
-    <input
-      type="password"
-      placeholder="OpenAI API Key"
-      v-model="openAiApiKey"
-      class="w-full px-4 py-2 mb-4 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-    />
-
-    <form @submit.prevent="onSubmit" class="flex flex-col gap-3">
-      <div class="flex flex-col sm:flex-row gap-2">
-        <input
-          type="text"
-          placeholder="Prompt"
-          v-model="promptValue"
-          class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-        />
-
-        <label
-          class="flex flex-col items-center justify-center px-4 py-2 bg-gray-100 text-gray-700 rounded-md border border-gray-300 cursor-pointer hover:bg-gray-200 transition"
+    <main class="flex min-w-0 flex-1 flex-col">
+      <header class="flex items-center gap-3 border-b border-stone-800 bg-stone-950/80 px-4 py-3 backdrop-blur">
+        <button
+          type="button"
+          class="rounded-lg px-2 py-1 text-stone-300 hover:bg-stone-800 lg:hidden"
+          aria-label="Conversations"
+          @click="sidebarOpen = true"
         >
-          <span class="text-sm">Input image</span>
-          <span class="text-xs" :class="{ 'opacity-0': !inputImage }">{{
-            (inputImage?.name ?? 'file').slice(0, 20)
-          }}</span>
+          ☰
+        </button>
+        <div class="min-w-0 flex-1">
           <input
-            type="file"
-            id="imageInput"
-            accept="image/*"
-            @change="onFileSelected"
-            class="hidden"
+            v-if="editingTitle"
+            v-model="titleDraft"
+            class="w-full rounded-lg border border-stone-700 bg-stone-900 px-2 py-1 font-serif text-lg text-stone-50 outline-none focus:border-cyan-300"
+            @keydown.enter="commitRename"
+            @keydown.esc="editingTitle = false"
+            @blur="commitRename"
           />
-        </label>
-      </div>
-
-      <select
-        v-model="resolutionValue"
-        placeholder="Resolution (e.g. 1024x1024)"
-        class="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-      >
-        <option default :value="{ width: 1024, height: 1024 }">
-          1024x1024
-        </option>
-        <option :value="{ width: 1024, height: 1536 }">1024x1536</option>
-        <option :value="{ width: 1536, height: 1024 }">1536x1024</option>
-      </select>
-
-      <button
-        :disabled="isGenerating"
-        type="submit"
-        class="px-4 py-2 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition"
-      >
-        {{ isGenerating ? 'Generating...' : 'Generate Image' }}
-      </button>
-    </form>
-
-    <div class="mt-6 space-y-4">
-      <div
-        v-for="({ url, height, width }, index) in images"
-        :key="index"
-        class="border border-gray-200 rounded-lg overflow-hidden shadow-sm relative group"
-      >
-        <img
-          :width="width"
-          :height="height"
-          :src="url"
-          class="w-full h-auto object-cover"
-        />
-
-        <button
-          @click="useAsInput(url, index)"
-          class="absolute bottom-3 right-14 bg-green-600 text-white p-2 rounded-full shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition opacity-0 group-hover:opacity-100"
-          title="Use as input image"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            class="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-            />
-          </svg>
-        </button>
-
-        <button
-          @click="downloadImage(url, index)"
-          class="absolute bottom-3 right-3 bg-indigo-600 text-white p-2 rounded-full shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition opacity-0 group-hover:opacity-100"
-          title="Download image"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            class="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-            />
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    <!-- Error Popup -->
-    <div
-      v-if="showErrorPopup"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-    >
-      <div
-        class="bg-white rounded-lg p-6 max-w-md w-full max-h-[80vh] overflow-auto"
-      >
-        <div class="flex justify-between items-start mb-4">
-          <h3 class="text-xl font-bold text-red-600">Error</h3>
           <button
-            @click="closeErrorPopup"
-            class="text-gray-400 hover:text-gray-600"
+            v-else
+            type="button"
+            class="block max-w-full truncate text-left font-serif text-lg text-stone-50"
+            :title="conversation ? 'Rename' : ''"
+            @click="startRename"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
+            {{ conversation?.title ?? 'Image studio' }}
           </button>
+          <p class="truncate text-xs text-stone-500">
+            Agent {{ settings.chatModel }} · Images {{ settings.imageModel }}
+            <span v-if="running" class="ml-1 animate-pulse text-cyan-300">● working</span>
+          </p>
         </div>
-        <div class="text-gray-700">
-          <p class="mb-2">An error occurred while generating the image:</p>
-          <div class="bg-gray-100 p-3 rounded-md overflow-auto max-h-[300px]">
-            <pre class="text-sm whitespace-pre-wrap">{{
-              error || 'Unknown error'
-            }}</pre>
-            <div
-              v-if="error?.response"
-              class="mt-2 pt-2 border-t border-gray-300"
+        <span
+          class="hidden rounded-full border px-3 py-1 text-xs font-semibold sm:inline"
+          :class="apiKey ? 'border-emerald-400/30 text-emerald-200' : 'border-amber-400/40 text-amber-200'"
+        >
+          {{ apiKey ? 'Key ready' : 'Key needed' }}
+        </span>
+        <button
+          type="button"
+          class="rounded-full border border-stone-700 px-3 py-1.5 text-sm font-semibold text-stone-200 hover:border-cyan-300/60"
+          @click="settingsOpen = !settingsOpen"
+        >
+          Settings
+        </button>
+      </header>
+
+      <div ref="scroller" class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]" @scroll.passive="onScroll">
+        <div ref="content" class="mx-auto flex w-full max-w-4xl flex-col gap-5 px-3 py-6 sm:px-6">
+          <div
+            v-if="ready && !activePath.length && !hiddenAfterLeaf"
+            class="mx-auto mt-10 max-w-lg rounded-3xl border border-dashed border-stone-700 bg-stone-900/40 p-8 text-center"
+          >
+            <p class="font-serif text-3xl text-stone-100">Describe it. Show it. Iterate.</p>
+            <p class="mt-3 text-sm leading-6 text-stone-400">
+              An agent plans each request and drives the image model for you: it writes the prompts, picks which images to
+              edit or combine, and checks the results. Attach images to any message, paint masks or sketch markups, and
+              rewind to any point of the conversation to branch off.
+            </p>
+            <button
+              v-if="!apiKey"
+              type="button"
+              class="mt-5 rounded-full bg-cyan-300 px-5 py-2 text-sm font-bold text-slate-950"
+              @click="settingsOpen = true"
             >
-              <h4 class="font-bold mb-1">Response:</h4>
-              <pre class="text-sm whitespace-pre-wrap">{{
-                JSON.stringify(error.response?.data || {}, null, 2)
-              }}</pre>
-            </div>
+              Add your OpenAI API key
+            </button>
+          </div>
+
+          <MessageItem v-for="message in activePath" :key="message.id" :message="message" />
+
+          <div
+            v-if="hiddenAfterLeaf && !running"
+            class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/25 bg-amber-950/20 px-4 py-3 text-sm"
+          >
+            <span class="text-amber-100">
+              Rewound. {{ hiddenAfterLeaf }} later message{{ hiddenAfterLeaf === 1 ? '' : 's' }} kept in a branch; sending
+              now starts a new branch from here.
+            </span>
+            <button
+              type="button"
+              class="rounded-full border border-amber-300/40 px-3 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-300/10"
+              @click="fastForward"
+            >
+              Restore later messages
+            </button>
           </div>
         </div>
-        <button
-          @click="closeErrorPopup"
-          class="mt-4 px-4 py-2 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full"
-        >
-          Close
-        </button>
       </div>
+
+      <div class="mx-auto w-full max-w-4xl">
+        <Composer />
+      </div>
+    </main>
+
+    <SettingsPanel />
+    <ImageViewer />
+    <ImageAnnotator />
+
+    <div
+      v-if="notice"
+      class="fixed bottom-4 left-1/2 z-[60] max-w-md -translate-x-1/2 rounded-2xl border border-rose-400/30 bg-rose-950/90 px-4 py-3 text-sm text-rose-100 shadow-xl"
+    >
+      {{ notice }}
     </div>
   </div>
 </template>
